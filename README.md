@@ -340,6 +340,23 @@ Key serve settings, with rationale:
 | `--reasoning-parser` / `--tool-call-parser` | `glm45` / `glm47` | Correct parsers for GLM-5.2's reasoning traces and tool-call format. |
 | `--distributed-executor-backend` | `mp` | Native multiprocessing + `--nnodes/--node-rank` rendezvous. No Ray. |
 
+## Felt latency: thinking mode is the biggest lever
+
+GLM-5.2 defaults to emitting a reasoning trace before any visible content. Measured on this
+cluster (short prompts, streaming): **first VISIBLE token at ~7-10 s** with default thinking,
+**0.36 s with thinking disabled** — a ~20x felt-latency difference, per request, no server change:
+
+```json
+{"model": "glm-5.2", "messages": [...], "stream": true,
+ "chat_template_kwargs": {"enable_thinking": false}}
+```
+
+Notes from measurement (2026-07-17): a `/nothink` prompt suffix does NOT suppress thinking on
+this chat template — use the kwarg. `reasoning_effort: "low"` is directionally weaker but
+high-variance (one sample thought *longer* than default). Prefix caching is enabled and works
+(identical 8K prompt: 9.9 s -> 0.7 s TTFT on the second call), so stable system prompts +
+full-history resends keep multi-turn TTFT near the ~0.5 s floor.
+
 ## Upgrading beyond the pin (read before bumping ANY ref)
 
 The pin is load-bearing. The 10 Triton kernels are bind-mounted over exact

@@ -264,6 +264,22 @@ docker logs -f vllm_slot                   # follow bring-up on the head node
 
 ## Benchmarks
 
+### Speed-Night 2 update (2026-07-17) — current serving config
+
+MTP k=4 → **k=5** + explicit `cudagraph_capture_sizes` (concurrency-6 was previously running with
+NO full CUDA graph — the default size list skips its batch size) + `VLLM_MARLIN_USE_ATOMIC_ADD=1`:
+
+| Metric | 2026-07-05 config | **2026-07-17 config** |
+|---|---|---|
+| c1 code / math / prose | ~28.8 median | **32.0 / 36.0 / 29.6** (mean 32.5) |
+| c6 aggregate | 60.5 | **65–75** |
+| First visible token (interactive) | 7–10 s | **0.36 s** with `enable_thinking:false` |
+| MTP accept (k=5) | 3.3–3.6 (k=4) | up to 4.88, pos-5 accept 0.547 |
+
+Full lever-by-lever results, dead ends, and the ranked roadmap: [SPEED-NIGHT-FINDINGS.md](SPEED-NIGHT-FINDINGS.md).
+
+### Original concurrency results (2026-07-05, k=4 config — historical)
+
 **Final concurrency results (2026-07-05)** — measured on this cluster with the final serve config
 (gmu 0.91, KV 10.95 GB, max-num-seqs 6, MTP k=4), on a boot with the indexer patch verified
 in-image. All runs: 512-token generations, temperature 0, low-depth context. All 6 concurrency

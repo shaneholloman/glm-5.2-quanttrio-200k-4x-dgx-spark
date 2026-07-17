@@ -47,3 +47,26 @@ Second finding from the same test: **MTP speculation is doing 2× of the work** 
 
 ## Scoreboard vs community (for context)
 Our 28.8–31 median remains the fastest known sustained single-stream for this stack on 4 nodes; Zatz 640K: 19.6–25.7 (peaks 33–37); Cosmic DCP2 328K: 20–36. Everyone's k=4 now. The differences between rigs are measurement-basis (prose vs synthetic) more than config.
+
+---
+
+# Speed-Night 2 (2026-07-17)
+
+Baseline going in (same-day bench, warm): c1 31.1 code / 34.2 math; c6 aggregate ~60.5.
+
+## Results by lever (each its own relaunch; 512-tok completions, temp 0, warm)
+
+| Config | c1 code | c1 math | c1 prose | c1 mean | c6 agg (2 rounds) |
+|---|---|---|---|---|---|
+| KNOWNGOOD (k=4, 8192 chunks) | 31.1 | 34.2 | ~27.5 | ~31 | ~60.5 |
+| P1: +capture-sizes[5..30] +atomic-add +4096 chunks | 30.8 | 32.9 | 27.5 | 30.4 | **66.2 / 75.0** |
+| P2: k=5 +capture[6..36] +atomic-add, 8192 chunks | **32.0** | **36.0** | **29.6** | **32.5** | 64.9 / 71.2 |
+
+## Verdicts
+
+- **cudagraph_capture_sizes incl. the c6 batch size (30 or 36): KEEP — the single biggest c6 win (+10-24% aggregate).** Root cause: default capture sizes round to multiples of (k+1) and skipped c6's token count entirely, so c6 decode ran piecewise (no full graph). Check `max_cudagraph_capture_size` vs `max_num_seqs*(k+1)` on any config change.
+- **MTP k=5: KEEP — new c1 records across all three workloads (mean 32.5, math 36.0).** Per-position acceptance at pos-5 measured 0.547 on prose-like loads — above the ~0.51 break-even. Mixed/agentic windows drop to ~0.36 accept at pos-4/5, so k=5 is workload-sensitive; prose/code/math all won.
+- **--max-num-batched-tokens 4096: REVERT — cost ~1-2 tok/s c1**, and did NOT fix the short-prompt-behind-long-ingest wait (35.0s vs 33.8s baseline). The real fix (`--max-num-partial-prefills 2`) is **NotImplementedError on this vLLM pin** — re-test after any re-pin.
+- **VLLM_MARLIN_USE_ATOMIC_ADD=1: kept** (log-recommended; not isolated, rode along with both winners).
+- **GDR finding:** NCCL reports `GPU Direct RDMA Disabled` on all HCAs — `dlvsym(mlx5dv_reg_dmabuf_mr, MLX5_1.25)` fails against Ubuntu rdma-core 50.0 (host and container identical). All cross-node traffic host-stages. On unified-memory GB10 the copy is same-silicon so the penalty is muted; revisit only if chasing the last few tok/s (needs a rdma-core rebuild or NCCL that probes unversioned symbols).
+- **Felt latency:** see README — `chat_template_kwargs: {"enable_thinking": false}` takes first visible token from 7-10s to 0.36s. Biggest perceived-speed lever on the whole stack.

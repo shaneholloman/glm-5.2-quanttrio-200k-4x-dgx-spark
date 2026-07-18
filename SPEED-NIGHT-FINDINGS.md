@@ -100,3 +100,50 @@ user streams were on the endpoint during the bench (num_requests_running=6; the 
 the identical quiet-box boot the same morning (c1 32.5 mean / c6 65-75). Benchmark discipline rule
 worth keeping: `curl /metrics | grep num_requests_running` must read 0, or your c1 number is
 actually a cN number.
+
+---
+
+# Speed-Night 3 (2026-07-18) — every remaining lever tested; k5 holds
+
+Same-session KNOWNGOOD baseline (fresh k5 boot, quiet box, verified `num_requests_running=0`):
+**c1 31.4 (code 31.0 / math 35.5 / prose 27.7), c6 aggregate 69.7–71.2, MTP accept_len 4.28.**
+(Every candidate below is measured against THIS number, not a cross-session one.)
+
+## Phase A — cheap sweeps: 0 wins. k5 is already at the cheap-lever optimum.
+
+| Lever | Result | Verdict |
+|---|---|---|
+| **Adaptive-k** (`num_speculative_tokens_per_batch_size [[1,2,5],[3,6,2]]`) | c1 ~22 (clean), c6 ~58; mechanism confirmed (draft depth drops to k=2 under load) | **regression** — discard |
+| **Dual-rail RoCE** (`NCCL_IB_HCA=rocep1s0f0,roceP2p1s0f0`, chan 8) | c1 30.7, c6 66–67; rail-2 tx delta ~27 KB (NCCL never used it) | **no-op** — link-local addressing didn't attract a second NCCL rail; discard |
+| **local-argmax drafter** (`use_local_argmax_reduction`, `deepseek_mtp.get_top_tokens` port) | c1 28.9, c6 69 | **slight regression** — the local-argmax path costs more than the vocab-allgather it saves on this stack; discard |
+| **TTFT-under-load wart** (33.8 s) | `--max-num-partial-prefills` → `NotImplementedError: Concurrent Partial Prefill` | **pin-blocked** — not supported at ab666069 |
+| **Cherry-pick #47448** (GLM MTP post-final-norm) | our `deepseek_mtp.py` already returns `(pre-norm, post-norm)` and norms once in `compute_logits` ("matches SGLang deepseek_nextn") | **already present** in the fork — no-op |
+| **Cherry-pick #47410** (GLM-5.2 fp32 gate) | correctness (not speed); config already sets `moe_router_dtype: float32` | **already effective / non-speed** — skip |
+
+## Phase B — DFlash: booted coherent, but the draft doesn't transfer.
+
+Tested [Keys/drowzeys' DFlash draft](https://github.com/drowzeys/keys-latest-GLM-5.2-Quantrio-INT4-INT8-Mixed-Abliterated-DFlash-4x-DGX-Sparks) (Part B, 7 GiB) paired with **our** target, his locked config (128k / k=12 / seqs=4 / KV 10 GiB). Our vLLM image already ships `v1/spec_decode/dflash.py`, so it ran clean.
+
+| Task | DFlash (our target) | Keys (his abliterated target) | our k5 |
+|---|---|---|---|
+| count | 30.4 | **41.85** | ~32 |
+| code | 20.7 | — | 31.0 |
+| essay | 19.1 | 11.25 | ~28 |
+| reading | 18.9 | 10.08 | ~28 |
+
+**accept_len 2.86, draft-accept 14–15%** (792 tokens drafted / ~120 accepted). Root cause: **his DFlash draft was trained against his *abliterated* target; against our non-abliterated QuantTrio it mispredicts**, so the 12 draft passes per step are mostly wasted and actively slow decode. Also drops context to 128k. **DFlash drafts are target-specific and do not cross the abliteration boundary.** Even with his matched 378 GiB target, DFlash is a *count-only* win (his own numbers show it loses to MTP on essay/reading). **Rejected for our target.**
+
+## Phase C — FlashInfer 0.6.14 sparse-MLA: not a one-night change.
+
+The prefill/decode lever (jasl's vLLM #41834: 41.9 decode / 1757 prefill on 2× GB10 credits FlashInfer 0.6.14's sparse-MLA path) requires either a re-pin to vLLM v0.25.1 + re-port of the entire b12x kernel overlay, or a native sm_121 FlashInfer rebuild. Both are multi-day rebuilds with real revalidation risk. **Documented as roadmap, not attempted** (guardrail: end the night serving ≥ KNOWNGOOD).
+
+## Bottom line
+
+**k5 remains champion: 36 peak / 32.5 mean c1, 65–75 c6, 200k ctx.** Speed-Night 2's wins (c6 cudagraph fix + k=5) were the real cheap gains on this stack; Speed-Night 3 confirms the cheap-lever well is dry. **All remaining upside is multi-day**, ranked:
+
+1. **Self-distilled DFlash draft against OUR QuantTrio target** — the only path to the 40+ count-lane numbers; needs draft training/distillation (the transfer failure above proves a matched draft is mandatory). Best as a *second, fast-lane endpoint*, not a k5 replacement (DFlash loses on prose even when matched).
+2. **FlashInfer 0.6.14 native sm_121 build + b12x re-port** — the only prefill-rate lever (~800 → potentially ~1500 tok/s) and a decode candidate.
+3. **Re-pin to vLLM v0.25.1** — picks up upstream GLM fixes; heavy revalidation.
+4. **RDMA one-shot allreduce** — +5–10 tok/s, weeks.
+
+Dead/confirmed-not-worth on this stack: adaptive-k, dual-rail, local-argmax, EP (fleet-killer), fuse_gemm_comms (symm-mem single-box-only), NCCL Tree (boot-fails), partial-prefills (pin-unsupported).
